@@ -31,15 +31,31 @@
 # include <stddef.h>
 # include <stdint.h>
 
+/**
+ * 功能：数据流结构体，定义内存分配和写入操作
+ * 用于bsdiff函数将补丁数据写入到自定义的目标（如文件、内存、网络等）
+ */
 struct bsdiff_stream
 {
-	void* opaque;
+	void* opaque;  // 不透明指针，存储用户自定义数据（如文件句柄）
 
-	void* (*malloc)(size_t size);
-	void (*free)(void* ptr);
-	int (*write)(struct bsdiff_stream* stream, const void* buffer, int size);
+	void* (*malloc)(size_t size);  // 内存分配函数指针
+	void (*free)(void* ptr);        // 内存释放函数指针
+	int (*write)(struct bsdiff_stream* stream, const void* buffer, int size);  // 数据写入函数指针
 };
 
+/**
+ * 功能：计算两个文件的差分并生成补丁文件
+ * 参数：
+ *   - old: 旧文件数据指针
+ *   - oldsize: 旧文件大小（字节数）
+ *   - new: 新文件数据指针
+ *   - newsize: 新文件大小（字节数）
+ *   - stream: 输出流指针（用于写入补丁数据）
+ * 返回：
+ *   - 0: 成功
+ *   - -1: 失败
+ */
 int bsdiff(const uint8_t* old, int64_t oldsize, const uint8_t* new, int64_t newsize, struct bsdiff_stream* stream);
 
 #endif

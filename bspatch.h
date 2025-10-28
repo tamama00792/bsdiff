@@ -30,12 +30,28 @@
 
 # include <stdint.h>
 
+/**
+ * 功能：补丁数据流结构体，定义读取操作
+ * 用于bspatch函数从自定义源读取补丁数据（如文件、内存、网络等）
+ */
 struct bspatch_stream
 {
-	void* opaque;
-	int (*read)(const struct bspatch_stream* stream, void* buffer, int length);
+	void* opaque;  // 不透明指针，存储用户自定义数据（如文件句柄）
+	int (*read)(const struct bspatch_stream* stream, void* buffer, int length);  // 数据读取函数指针
 };
 
+/**
+ * 功能：应用补丁，从旧文件生成新文件
+ * 参数：
+ *   - old: 旧文件数据指针
+ *   - oldsize: 旧文件大小（字节数）
+ *   - new: 新文件数据缓冲区指针（输出）
+ *   - newsize: 新文件大小（字节数）
+ *   - stream: 补丁数据流指针
+ * 返回：
+ *   - 0: 成功
+ *   - -1: 失败
+ */
 int bspatch(const uint8_t* old, int64_t oldsize, uint8_t* new, int64_t newsize, struct bspatch_stream* stream);
 
 #endif
