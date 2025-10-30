@@ -147,11 +147,11 @@ static void qsufsort(int64_t *I,int64_t *V,const uint8_t *old,int64_t oldsize)
 	for(i=255;i>0;i--) buckets[i]=buckets[i-1];
 	buckets[0]=0;
 
-	// 第二步：填充后缀数组I（基于第一个字节排序）
+	// 第二步：填充后缀数组I（基于第一个字节排序），I[i]存储第i个后缀在原数据中的索引
 	for(i=0;i<oldsize;i++) I[++buckets[old[i]]]=i;
 	// 在I[0]处存储oldsize作为标记
 	I[0]=oldsize;
-	// 填充辅助数组V（存储每个后缀的排序值）
+	// 填充辅助数组V（存储每个后缀所在区间的末尾（不含）的索引）
 	for(i=0;i<oldsize;i++) V[i]=buckets[old[i]];
 	V[oldsize]=0;
 	// 标记不需要排序的单元素分组
@@ -171,7 +171,7 @@ static void qsufsort(int64_t *I,int64_t *V,const uint8_t *old,int64_t oldsize)
 			} else {
 				// 处理一个需要排序的段
 				if(len) I[i-len]=-len;  // 标记前一段的长度
-				len=V[I[i]]+1-i;         // 计算当前段的长度
+				len=V[I[i]]+1-i;         // 计算当前段的长度，I[i]是当前后缀在原数据的索引，V[I[i]]是当前后缀所在区间的末尾（不含）的索引，+1是因为区间是左闭右开的
 				split(I,V,i,len,h);      // 对当前段进行排序
 				i+=len;                  // 移动到下一个段
 				len=0;                   // 重置长度
@@ -373,38 +373,53 @@ static int bsdiff_internal(const struct bsdiff_request req)
 	/* 第二步：计算差分，同时写入控制数据 */
 	// 初始化扫描位置、匹配长度、匹配位置
 	scan=0;len=0;pos=0;
-	// 初始化上次处理的扫描位置、匹配位置、偏移
+	// lastscan是当前“候选”匹配区域在new中的开始位置；
+	// lastpos 是当前“候选”匹配区域在old中的开始位置；
+	// lastoffset是当前“候选”匹配区域中old中位置相对于new中对应位置的差值，
+	//   因此<new_pos>+lastoffset=<old_pos>；
 	lastscan=0;lastpos=0;lastoffset=0;
 	// 主循环：遍历整个新文件
 	while(scan<req.newsize) {
+		// 当前“候选”匹配区域为：new[lastscan, scan) <-> old[lastpos, scan+lastoffset)
 		oldscore=0;  // 初始化旧文件匹配分数
 
 		// 寻找下一个匹配点（使用贪心算法扩展匹配范围）
 		for(scsc=scan+=len;scan<req.newsize;scan++) {
-			// 在后缀数组中搜索与当前位置最佳匹配的位置
+			// 在后缀数组中搜索与当前位置最佳匹配的位置，pos代表位置，len代表长度
 			len=search(I,req.old,req.oldsize,req.new+scan,req.newsize-scan,
 					0,req.oldsize,&pos);
 
-			// 计算在上次匹配的基础上，新扩展的匹配分数
+			// 上一步的搜索，得到了“候选”匹配区域new的向后延伸，在old中完全匹配区域的开始位置和长度，
+			//   但这个开始位置和“候选”匹配区域中old的结束位置有可能并不相连。
+
+			// 统计new中[scan, scan+len)与old中“候选”匹配区域的对应延伸区段中相等的字节数，
+			// 累加到oldscore中。注意循环变量是scsc，因此不会重复累加。
 			for(;scsc<scan+len;scsc++)
 			if((scsc+lastoffset<req.oldsize) &&
 				(req.old[scsc+lastoffset] == req.new[scsc]))
 				oldscore++;
 
-			// 如果当前匹配刚好等于旧文件匹配分数，或者匹配长度明显超过旧文件，
-			// 则认为找到了一个好的匹配点，停止扩展
+			// (len==oldscore) && (len!=0) 说明当前“候选”区域的延伸区域仍然匹配的很好，
+			//   那么可以扩展“候选”匹配区域，并继续向后搜索；
+			// (len>oldscore+8) 说明延伸区域中至少有8个以上的字节是不匹配的，
+			//   那么当前“候选”区域应该到此截止而不扩展；
 			if(((len==oldscore) && (len!=0)) || 
 				(len>oldscore+8)) break;
 
-			// 否则，减少旧文件匹配分数，继续寻找更好的匹配点
+			// 走到这里说明当前不相等的字节数没有大于8，需要继续循环。
+			// 由于下次循环是从scan+1的位置上尝试，因此若scan对应的字节是相等的，
+			// 它已经被计算在oldscore之内的值需要被减掉。
 			if((scan+lastoffset<req.oldsize) &&
 				(req.old[scan+lastoffset] == req.new[scan]))
 				oldscore--;
 		};
 
-		// 如果找到了合适的匹配点，生成差分数据
+		// len!=oldscore说明当前“候选”匹配区域不需要再继续向后搜索了；
+		// scan==newsize说明已经已到达文件尾；
+		// 符合这两个条件之一时，我们开始处理当前这个近似匹配区域；
 		if((len!=oldscore) || (scan==req.newsize)) {
 			// 前向扩展：在前一个匹配点之后寻找更长的连续匹配
+			// 确定lenf的长度。区域[lastscan, lastscan+lenf)被称为forward extension
 			s=0;Sf=0;lenf=0;
 			for(i=0;(lastscan+i<scan)&&(lastpos+i<req.oldsize);) {
 				if(req.old[lastpos+i]==req.new[lastscan+i]) s++;
@@ -414,6 +429,7 @@ static int bsdiff_internal(const struct bsdiff_request req)
 			};
 
 			// 后向扩展：在当前匹配点之前寻找更长的连续匹配
+			// 确定lenb的长度。区域[scan-lenb, scan)被称为backward extension
 			lenb=0;
 			if(scan<req.newsize) {
 				s=0;Sb=0;
@@ -425,6 +441,7 @@ static int bsdiff_internal(const struct bsdiff_request req)
 			};
 
 			// 处理重叠情况：如果前向扩展和后向扩展有重叠，选择最佳重叠点
+			// forword extension和backward extension区域出现重叠时需要调整lenf和lenb
 			if(lastscan+lenf>scan-lenb) {
 				overlap=(lastscan+lenf)-(scan-lenb);  // 计算重叠长度
 				s=0;Ss=0;lens=0;
@@ -455,18 +472,25 @@ static int bsdiff_internal(const struct bsdiff_request req)
 				return -1;
 
 			/* 写入diff数据（差值：新文件-旧文件）*/
+			// forward extension即为diff区段，减去old中对应位置的值，结果写到buffer中
 			for(i=0;i<lenf;i++)
 				buffer[i]=req.new[lastscan+i]-req.old[lastpos+i];
+			// 写入三元组的x
 			if (writedata(req.stream, buffer, lenf))
 				return -1;
 
 			/* 写入额外数据（新文件中无法用旧文件表示的部分）*/
+			// forward extension和backward extension若不相连，两者中间的区域
+			// 即为extra区段，其内容直接复制到buffer中
 			for(i=0;i<(scan-lenb)-(lastscan+lenf);i++)
 				buffer[i]=req.new[lastscan+lenf+i];
+			// 写入三元组的y
 			if (writedata(req.stream, buffer, (scan-lenb)-(lastscan+lenf)))
 				return -1;
 
 			// 更新位置追踪变量
+			// backward extension会被作为下一轮“候选”匹配区域的开始部分，
+			// 也就是变成下一次的forward extension的一部分
 			lastscan=scan-lenb;  // 更新上次扫描位置
 			lastpos=pos-lenb;    // 更新上次匹配位置
 			lastoffset=pos-scan;  // 更新偏移量
